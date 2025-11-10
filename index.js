@@ -22,8 +22,33 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 app.use("/uploads", express.static(path.join(__dirname, "modules", "files")));
 
+const defaultAllowedOrigins = [
+  "https://menu-fe-eta.vercel.app",
+  "https://adams-lounge.com",
+  "http://localhost:5173",
+  "http://localhost:4173",
+  "http://localhost:3000",
+];
+
+const envAllowedOrigins = (process.env.CORS_ALLOWED_ORIGINS || "")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+const allowedOrigins = [...new Set([...envAllowedOrigins, ...defaultAllowedOrigins])];
+
 const corsOptions = {
-  origin: "https://menu-fe-eta.vercel.app/",
+  origin(origin, callback) {
+    if (!origin) {
+      return callback(null, true);
+    }
+
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    return callback(new Error(`Origin ${origin} not allowed by CORS`));
+  },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: [
