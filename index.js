@@ -23,7 +23,7 @@ const __dirname = path.dirname(__filename);
 app.use("/uploads", express.static(path.join(__dirname, "modules", "files")));
 
 const corsOptions = {
-  origin: "https://adams-lounge.com",
+  origin: "https://menu-fe-eta.vercel.app",
   // origin: "http://localhost:8080",
 
   credentials: true,
