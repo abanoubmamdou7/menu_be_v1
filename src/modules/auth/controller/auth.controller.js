@@ -8,6 +8,8 @@ import {
   connectToDatabase,
   connectToSqlDB,
 } from "../../../../DB/sqlConnection.js";
+import { prisma } from "../../../utils/prismaClient.js";
+import logger from "../../../utils/logger.js";
 
 export const login = asyncHandler(async (req, res) => {
   const { email, password } = req.body;
@@ -90,11 +92,14 @@ export const connectClient = asyncHandler(async (req, res) => {
 
   const databaseName = connInfo.SQL_DB_NAME;
 
-  // Connect to the client database
-  const clientConnection = await connectToDatabase(databaseName);
+  let clientConnection;
 
-  // Query branches
-  const branchesResult = await clientConnection.request().query(`
+  try {
+    // Connect to the client database
+    clientConnection = await connectToDatabase(databaseName);
+
+    // Query branches
+    const branchesResult = await clientConnection.request().query(`
 SELECT 
   BRANCH_CODE,
   BRANCH_NAME,
@@ -102,17 +107,65 @@ SELECT
 FROM SYS_COMPANY_BRANCHES
 WHERE Active = 1
 ORDER BY BRANCH_NAME;
-  `);
+    `);
 
-  // Close client connection
-  await clientConnection.close();
+    const branches = Array.isArray(branchesResult.recordset)
+      ? branchesResult.recordset
+      : [];
 
-  res.status(200).json({
-    success: true,
-    message: `✅ Connected to ${databaseName} and fetched branches`,
-    databaseName,
-    CLIENT_ID: clientId,
-    activeUsers: connInfo.ACTIVE_USERS,
-    branches: branchesResult.recordset,
-  });
+    const sanitizedBranches = branches
+      .map((branch) => ({
+        branchCode: branch.BRANCH_CODE?.trim(),
+        branchName: branch.BRANCH_NAME?.trim(),
+        company: branch.COMPANY?.trim(),
+      }))
+      .filter(({ branchCode, branchName }) =>
+        Boolean(branchCode && branchName)
+      );
+
+    if (sanitizedBranches.length > 0) {
+      const operations = sanitizedBranches.map((branch) =>
+        prisma.restaurantBranch.upsert({
+          where: { branch_code: branch.branchCode },
+          update: {
+            branch_name: branch.branchName,
+            company: branch.company || null,
+          },
+          create: {
+            branch_code: branch.branchCode,
+            branch_name: branch.branchName,
+            company: branch.company || null,
+          },
+        })
+      );
+
+      try {
+        await prisma.$transaction(operations);
+      } catch (error) {
+        logger.error("Failed to sync branches to restaurant_branches", {
+          error: error?.message || error,
+        });
+        throw error;
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      message: `✅ Connected to ${databaseName} and fetched branches`,
+      databaseName,
+      CLIENT_ID: clientId,
+      activeUsers: connInfo.ACTIVE_USERS,
+      branches,
+    });
+  } finally {
+    if (clientConnection) {
+      try {
+        await clientConnection.close();
+      } catch (error) {
+        logger.warn("Failed to close client database connection", {
+          error: error?.message || error,
+        });
+      }
+    }
+  }
 });

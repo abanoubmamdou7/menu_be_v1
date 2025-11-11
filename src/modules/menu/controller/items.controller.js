@@ -39,6 +39,36 @@ const getPagination = (query) => {
   return { page, limit, offset };
 };
 
+export const getBranches = asyncHandler(async (_req, res) => {
+  const branches = await prisma.restaurantBranch.findMany({
+    select: {
+      branch_code: true,
+      branch_name: true,
+      company: true,
+    },
+    orderBy: {
+      branch_name: "asc",
+    },
+  });
+
+  const normalizedBranches = branches
+    .map((branch) => ({
+      code: normalizeString(branch.branch_code),
+      name:
+        normalizeString(branch.branch_name) ||
+        normalizeString(branch.branch_code) ||
+        "",
+      company: normalizeString(branch.company),
+    }))
+    .filter((branch) => Boolean(branch.code && branch.name));
+
+  res.json({
+    success: true,
+    data: normalizedBranches,
+    count: normalizedBranches.length,
+  });
+});
+
 export const getMenuItems = asyncHandler(async (req, res) => {
   const { page, limit, offset } = getPagination(req.query);
   const branch_code = await getBranchCode(req);

@@ -24,7 +24,7 @@ model CustomerDetails {
 // Model for menu categories (item main groups)
 model ItemMainGroup {
   idPrimary             Int      @id @default(autoincrement()) @map("id_primary")
-  itm_group_code        String   @unique @map("itm_group_code")
+  itm_group_code        String   @map("itm_group_code")
   itm_group_name        String
   show_in_website       Boolean?
   order_group           Int?
@@ -42,7 +42,7 @@ model ItemMainGroup {
 
   @@map("item_main_group")
 
-  @@index([itm_group_code])
+  @@unique([itm_group_code, branch_code], name: "item_main_group_code_branch_code_unique")
   @@index([show_in_website])
   @@index([saleable])
   @@index([branch_code])
@@ -54,7 +54,7 @@ model ItemMainGroup {
 // Model for menu items
 model ItemMaster {
   id                     Int      @id @default(autoincrement()) @map("id")
-  itm_code               String   @unique @default(uuid()) @map("itm_code")
+  itm_code               String   @map("itm_code")
   itm_name               String
   itm_group_code         String?  @map("itm_group_code")
   photo_url              Bytes?
@@ -75,11 +75,11 @@ model ItemMaster {
   spicy                  Boolean?
   branch_code            String?
 
-  item_group ItemMainGroup? @relation(fields: [itm_group_code], references: [itm_group_code], onDelete: SetNull)
+  item_group ItemMainGroup? @relation(fields: [itm_group_code, branch_code], references: [itm_group_code, branch_code], onDelete: SetNull)
 
   @@map("item_master")
 
-  @@index([itm_code])
+  @@unique([itm_code, branch_code], name: "item_master_code_branch_code_unique")
   @@index([itm_group_code])
   @@index([item_order])
   @@index([show_in_website])
@@ -137,6 +137,18 @@ model RestaurantInfo {
 
   @@index([branch_code])
   @@index([theme_id])
+}
+
+model RestaurantBranch {
+  id          String   @id @default(uuid())
+  branch_code String   @unique
+  branch_name String
+  company     String?
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  @@map("restaurant_branches")
+  @@index([branch_code])
 }
 
 

@@ -24,10 +24,11 @@ app.use("/uploads", express.static(path.join(__dirname, "modules", "files")));
 
 const defaultAllowedOrigins = [
   "https://menu-fe-eta.vercel.app",
+  "https://menu-frontend-k1rq.vercel.app",
   "https://adams-lounge.com",
   "http://localhost:5173",
   "http://localhost:4173",
-  "http://localhost:3000",
+  "http://localhost:8080",
 ];
 
 const envAllowedOrigins = (process.env.CORS_ALLOWED_ORIGINS || "")

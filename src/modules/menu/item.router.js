@@ -3,6 +3,7 @@ import * as itemsController from "./controller/items.controller.js";
 
 const router = Router();
 
+router.get("/branches", itemsController.getBranches);
 router.get("/items", itemsController.getMenuItems);
 router.get("/categories/all", itemsController.getAllCategories);
 router.get("/categories", itemsController.getParentCategories);

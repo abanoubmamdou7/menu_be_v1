@@ -317,7 +317,12 @@ class ItemTransferService {
       let count = 0;
       for (const g of groups) {
         await prisma.itemMainGroup.upsert({
-          where: { itm_group_code: g.itm_group_code },
+          where: {
+            item_main_group_code_branch_code_unique: {
+              itm_group_code: g.itm_group_code,
+              branch_code: g.branch_code,
+            },
+          },
           update: {
             itm_group_name: g.itm_group_name,
             order_group: g.order_group,
@@ -365,7 +370,12 @@ class ItemTransferService {
       let count = 0;
       for (const i of items) {
         await prisma.itemMaster.upsert({
-          where: { itm_code: i.itm_code },
+          where: {
+            item_master_code_branch_code_unique: {
+              itm_code: i.itm_code,
+              branch_code: i.branch_code,
+            },
+          },
           update: {
             itm_name: i.itm_name,
             item_order: i.item_order,
