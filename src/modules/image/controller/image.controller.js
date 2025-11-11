@@ -11,10 +11,21 @@ const __dirname = path.dirname(__filename);
  * ✅ Shared helper: always returns correct upload base path.
  */
 function getUploadPath(fileName = "") {
-  const uploadRoot =
-    process.env.NODE_ENV === "development"
-      ? path.resolve(__dirname, "../../../../mashwizfront/public/uploads")
-      : "/var/www/mashwizfront/public/uploads";
+  const configuredBase = process.env.UPLOAD_BASE_DIR?.trim();
+
+  let uploadRoot;
+  if (configuredBase) {
+    uploadRoot = configuredBase;
+  } else if (process.env.NODE_ENV === "development") {
+    uploadRoot = path.resolve(
+      __dirname,
+      "../../../../mashwizfront/public/uploads"
+    );
+  } else if (process.env.AWS_REGION || process.env.AWS_EXECUTION_ENV) {
+    uploadRoot = "/tmp/mashwiz_uploads";
+  } else {
+    uploadRoot = "/var/www/mashwizfront/public/uploads";
+  }
 
   return path.join(uploadRoot, fileName);
 }
@@ -29,10 +40,7 @@ export const uploadImage = asyncHandler(async (req, res, next) => {
   console.log("Upload Dir will be:", uploadDir);
 
   try {
-    if (!fs.existsSync(uploadDir)) {
-      console.log("Creating upload dir...");
-      fs.mkdirSync(uploadDir, { recursive: true });
-    }
+    fs.mkdirSync(uploadDir, { recursive: true });
   } catch (err) {
     console.error("Failed to create upload dir:", err);
     return next(new Error("Failed to create upload dir"));
