@@ -21,7 +21,11 @@ function getUploadPath(fileName = "") {
       __dirname,
       "../../../../mashwizfront/public/uploads"
     );
-  } else if (process.env.AWS_REGION || process.env.AWS_EXECUTION_ENV) {
+  } else if (
+    process.env.VERCEL === "1" ||
+    process.env.AWS_REGION ||
+    process.env.AWS_EXECUTION_ENV
+  ) {
     uploadRoot = "/tmp/mashwiz_uploads";
   } else {
     uploadRoot = "/var/www/mashwizfront/public/uploads";
@@ -36,12 +40,26 @@ function getUploadPath(fileName = "") {
  * ✅ Upload Image
  */
 export const uploadImage = asyncHandler(async (req, res, next) => {
-  const uploadDir = getUploadPath();
+  let uploadDir = getUploadPath();
   console.log("Upload Dir will be:", uploadDir);
 
   try {
     fs.mkdirSync(uploadDir, { recursive: true });
   } catch (err) {
+    if (err.code === "EROFS") {
+      const fallbackDir = path.join("/tmp/mashwiz_uploads");
+      console.warn(
+        `Upload dir not writable (${uploadDir}), falling back to ${fallbackDir}`
+      );
+      try {
+        fs.mkdirSync(fallbackDir, { recursive: true });
+        uploadDir = fallbackDir;
+      } catch (fallbackErr) {
+        console.error("Fallback upload dir creation failed:", fallbackErr);
+        return next(new Error("Failed to create upload dir"));
+      }
+    }
+
     console.error("Failed to create upload dir:", err);
     return next(new Error("Failed to create upload dir"));
   }
