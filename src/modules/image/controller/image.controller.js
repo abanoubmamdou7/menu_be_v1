@@ -1,93 +1,37 @@
 import { asyncHandler } from "../../../utils/errorHandling.js";
 import { fileUpload, allowedTypesMap } from "../../../utils/multer.js";
-import fs from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
+import { uploadMultipleBuffers } from "../../../utils/uploadHelper.js";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
-/**
- * ✅ Shared helper: always returns correct upload base path.
- */
-function getUploadPath(fileName = "") {
-  const configuredBase = process.env.UPLOAD_BASE_DIR?.trim();
+const defaultCloudinaryFolder = process.env.APP_NAME
+  ? `${process.env.APP_NAME}/uploads`
+  : "uploads";
+const CLOUDINARY_IMAGE_FOLDER =
+  process.env.CLOUDINARY_IMAGE_FOLDER || defaultCloudinaryFolder;
 
-  let uploadRoot;
-  if (configuredBase) {
-    uploadRoot = configuredBase;
-  } else if (process.env.NODE_ENV === "development") {
-    uploadRoot = path.resolve(
-      __dirname,
-      "../../../../mashwizfront/public/uploads"
-    );
-  } else if (
-    process.env.VERCEL === "1" ||
-    process.env.AWS_REGION ||
-    process.env.AWS_EXECUTION_ENV
-  ) {
-    uploadRoot = "/tmp/mashwiz_uploads";
-  } else {
-    uploadRoot = "/var/www/mashwizfront/public/uploads";
-  }
-
-  return path.join(uploadRoot, fileName);
-}
-
-// ================================================================================
-
-/**
- * ✅ Upload Image
- */
 export const uploadImage = asyncHandler(async (req, res, next) => {
-  let uploadDir = getUploadPath();
-  console.log("Upload Dir will be:", uploadDir);
+  // memory upload middleware
+  const upload = fileUpload(8, allowedTypesMap, 10);
+  upload(req, res, async (err) => {
+    if (err) return next(err);
 
-  try {
-    fs.mkdirSync(uploadDir, { recursive: true });
-  } catch (err) {
-    if (err.code === "EROFS") {
-      const fallbackDir = path.join("/tmp/mashwiz_uploads");
-      console.warn(
-        `Upload dir not writable (${uploadDir}), falling back to ${fallbackDir}`
-      );
-      try {
-        fs.mkdirSync(fallbackDir, { recursive: true });
-        uploadDir = fallbackDir;
-      } catch (fallbackErr) {
-        console.error("Fallback upload dir creation failed:", fallbackErr);
-        return next(new Error("Failed to create upload dir"));
-      }
-    }
-
-    console.error("Failed to create upload dir:", err);
-    return next(new Error("Failed to create upload dir"));
-  }
-
-  console.log("Calling fileUpload middleware...");
-
-  const upload = fileUpload(5, allowedTypesMap, uploadDir);
-  upload(req, res, (err) => {
-    if (err) {
-      console.error("Upload error:", err);
-      return next(err);
-    }
-
-    if (!req.files || !req.files.image || req.files.image.length === 0) {
-      console.log("No file uploaded");
+    const files = req.files?.image || [];
+    if (!files.length) {
       return next(new Error("No file uploaded", { cause: 400 }));
     }
 
-    const fileUrls = req.files.image.map(
-      (file) => `${path.basename(file.path)}`
-    );
-    console.log("File URLs:", fileUrls);
+    try {
+      const urls = await uploadMultipleBuffers(files, CLOUDINARY_IMAGE_FOLDER);
 
-    return res.status(200).json({
-      status: "success",
-      message: "File(s) uploaded successfully",
-      fileUrls,
-    });
+      return res.status(200).json({
+        status: "success",
+        message: "File(s) uploaded successfully l0ol",
+        fileUrls: urls,
+        files: files.map((f, i) => ({ originalName: f.originalname, url: urls[i] })),
+      });
+    } catch (e) {
+      return next(e);
+    }
   });
 });
 // ================================================================================
