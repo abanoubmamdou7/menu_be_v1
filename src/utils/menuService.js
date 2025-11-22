@@ -23,6 +23,12 @@ class MenuService {
         image: true,
         show_in_website: true,
         saleable: true,
+      branch_code: true,
+      fasting: true,
+      vegetarian: true,
+      healthy_choice: true,
+      signature_dish: true,
+      spicy: true,
       },
       take: limit,
       skip: offset,
@@ -46,6 +52,14 @@ class MenuService {
     photo_url: item.photo_url,
     show_in_website: item.show_in_website,
     saleable: item.saleable,
+    branchCode: item.branch_code ?? null,
+    fasting: item.fasting === true,
+    vegetarian: item.vegetarian === true,
+    healthyChoice: item.healthy_choice === true,
+    healthy_choice: item.healthy_choice === true,
+    signatureDish: item.signature_dish === true,
+    signature_dish: item.signature_dish === true,
+    spicy: item.spicy === true,
     }));
   }
 

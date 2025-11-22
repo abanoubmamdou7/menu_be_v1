@@ -19,7 +19,10 @@ function buildPrismaUrl() {
     }
 
     if (!parsed.searchParams.has("connection_limit")) {
-      parsed.searchParams.set("connection_limit", "1");
+      // Increase connection limit to support parallel operations
+      // Default to 20 connections for better performance during sync operations
+      const connectionLimit = process.env.PRISMA_CONNECTION_LIMIT || "20";
+      parsed.searchParams.set("connection_limit", connectionLimit);
     }
 
     return parsed.toString();

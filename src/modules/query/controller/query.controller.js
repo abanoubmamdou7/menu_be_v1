@@ -43,16 +43,24 @@ export const mashwizQueryHandler = async (req, res) => {
 export { prisma };
 
 // MSSQL raw query (ERP)
-export async function erpQuery(sqlText, params = {}) {
+export async function erpQuery(sqlText, params = {}, dbPool = SqlServerDB) {
   try {
-    if (SqlServerDB.closed || !SqlServerDB.connected) {
+    // If passing a specific pool, ensure it's connected (if it's the default one, we check global state)
+    if (dbPool === SqlServerDB && (SqlServerDB.closed || !SqlServerDB.connected)) {
       logger.info('⚠️ SQL Server connection was closed. Reconnecting...');
       await SqlServerDB.connect();
+    } else if (dbPool !== SqlServerDB && !dbPool.connected && !dbPool.connecting) {
+       // For custom pools, we assume they are connected by the caller, but safe check
+       try {
+         await dbPool.connect();
+       } catch (e) {
+         // might already be connected
+       }
     }
 
-    logger.info(`Executing ERP query: ${sqlText}`, { params });
+    logger.info(`Executing ERP query`, { params });
 
-    const request = SqlServerDB.request();
+    const request = dbPool.request();
 
     // Bind named parameters
     if (typeof params === "object" && params !== null) {

@@ -7,6 +7,8 @@ import logger from "../../utils/logger.js";
 class ItemTransferService {
   constructor() {
     this.batchSize = parseInt(process.env.SYNC_BATCH_SIZE, 10) || 100;
+    // Chunk size for parallel operations (to avoid overwhelming connection pool)
+    this.parallelChunkSize = parseInt(process.env.SYNC_PARALLEL_CHUNK_SIZE, 10) || 50;
   }
 
   parseBoolean(value) {
@@ -21,7 +23,7 @@ class ItemTransferService {
     return Boolean(value);
   }
   /** 🔹 Transfer Item Main Groups with hierarchy */
-  async transferItemMainGroups(branchCode) {
+  async transferItemMainGroups(branchCode, dbPool) {
     try {
       logger.info(
         `Starting item main groups synchronization for branch ${branchCode}`
@@ -48,7 +50,8 @@ class ItemTransferService {
           AND b.BRANCH = @branchCode
         ORDER BY g.GROUP_ORDER
         `,
-        { branchCode }
+        { branchCode },
+        dbPool
       );
 
       if (!Array.isArray(erpGroups) || erpGroups.length === 0) {
@@ -95,7 +98,7 @@ class ItemTransferService {
   }
 
   /** 🔹 Transfer Items */
-  async transferItemMaster(branchCode) {
+  async transferItemMaster(branchCode, dbPool) {
     try {
       const groups = await erpQuery(
         `
@@ -109,7 +112,8 @@ class ItemTransferService {
           AND b.TYPE_CODE = 'ITEM_GROUP'
         WHERE b.BRANCH = @branchCode
         `,
-        { branchCode }
+        { branchCode },
+        dbPool
       );
 
       const validGroupCodes = new Set(
@@ -131,34 +135,55 @@ class ItemTransferService {
       let totalUpserted = 0;
 
       while (true) {
-        const items = await erpQuery(
-          `
-  WITH RankedPOS AS
-  (
-      SELECT 
-          p.ITEM_CODE,
-          p.PRICE,
-          ROW_NUMBER() OVER (
-              PARTITION BY p.ITEM_CODE
-              ORDER BY ISNULL(p.END_DATE, CONVERT(DATE, GETDATE())) DESC
-          ) AS rn
-      FROM POS_ITEM_SALES_PRICE p
-      WHERE p.SALES_TYPE = 'POS'
-        AND p.COMPANY = 'ORF'
-        AND p.BRANCH = @branchCode
-  ),
-  LatestPOS AS
-  (
-      SELECT ITEM_CODE, PRICE
-      FROM RankedPOS
-      WHERE rn = 1
-  )
+        // Try to get items with ITEM_PIC if it exists, otherwise without it
+        let items;
+        try {
+          items = await erpQuery(
+            `
   SELECT 
       A.ITEM_CODE,
       A.ITEM_NAME,
       A.ITM_GROUP_CODE,
       A.MENU_ORDER,
-      ISNULL(L.PRICE, A.SALES_PRICE) AS SALES_PRICE,
+      ISNULL(A.SALES_PRICE, 0) AS SALES_PRICE,
+      A.SHOW_IN_WEBSITE,
+      A.WEBSITE_NAME_EN,
+      A.WEBSITE_NAME_AR,
+      A.WEBSITE_DESCRIPTION_EN,
+      A.WEBSITE_DESCRIPTION_AR,
+      A.AUTO_NO,
+      A.SALEABLE,
+      A.FASTING,
+      A.VEGETARIAN,
+      A.HEALTHY_CHOICE,
+      A.SIGNATURE_DISH,
+      A.SPICY,
+      A.ITEM_PIC,
+      B.BRANCH
+  FROM INV_ITEM_MASTER A
+  INNER JOIN SYS_COMPANY_BRANCHES_SETUP B 
+    ON A.ITEM_CODE = B.CODE 
+    AND B.TYPE_CODE = 'ITEM'
+    AND B.BRANCH = @branchCode
+  WHERE A.ITEM_TYPE = 'N'          
+  ORDER BY A.MENU_ORDER
+  OFFSET ${offset} ROWS FETCH NEXT ${this.batchSize} ROWS ONLY
+`,
+            { branchCode },
+            dbPool
+          );
+        } catch (picError) {
+          // If ITEM_PIC column doesn't exist, query without it
+          if (picError.message?.includes("ITEM_PIC") || picError.message?.includes("Invalid column")) {
+            logger.debug(`ITEM_PIC column not found, querying without it for branch ${branchCode}`);
+            items = await erpQuery(
+              `
+  SELECT 
+      A.ITEM_CODE,
+      A.ITEM_NAME,
+      A.ITM_GROUP_CODE,
+      A.MENU_ORDER,
+      ISNULL(A.SALES_PRICE, 0) AS SALES_PRICE,
       A.SHOW_IN_WEBSITE,
       A.WEBSITE_NAME_EN,
       A.WEBSITE_NAME_AR,
@@ -177,13 +202,17 @@ class ItemTransferService {
     ON A.ITEM_CODE = B.CODE 
     AND B.TYPE_CODE = 'ITEM'
     AND B.BRANCH = @branchCode
-  LEFT JOIN LatestPOS L ON A.ITEM_CODE = L.ITEM_CODE
   WHERE A.ITEM_TYPE = 'N'          
   ORDER BY A.MENU_ORDER
   OFFSET ${offset} ROWS FETCH NEXT ${this.batchSize} ROWS ONLY
 `,
-          { branchCode }
-        );
+              { branchCode },
+              dbPool
+            );
+          } else {
+            throw picError;
+          }
+        }
 
         if (!Array.isArray(items) || items.length === 0) {
           logger.info(
@@ -293,7 +322,7 @@ class ItemTransferService {
       itm_group_code: validGroups.has(i.ITM_GROUP_CODE)
         ? i.ITM_GROUP_CODE.trim()
         : null,
-      photo_url: i.ITEM_PIC ?? "",
+      photo_url: i.ITEM_PIC ?? null, // ITEM_PIC may not exist, will be null if not available
       sales_price: i.SALES_PRICE !== null ? Number(i.SALES_PRICE) : null,
       show_in_website: bool(i.SHOW_IN_WEBSITE),
       saleable: bool(i.SALEABLE),
@@ -310,116 +339,144 @@ class ItemTransferService {
     };
   }
 
-  /** 🔹 Batch upsert groups using Prisma */
+  /** 🔹 Batch upsert groups using Prisma (optimized with parallel operations) */
 
   async batchUpsertGroups(groups) {
     try {
-      let count = 0;
-      for (const g of groups) {
-        await prisma.itemMainGroup.upsert({
-          where: {
-            item_main_group_code_branch_code_unique: {
-              itm_group_code: g.itm_group_code,
-              branch_code: g.branch_code,
+      if (!groups || groups.length === 0) {
+        return { affectedRows: 0 };
+      }
+
+      // Process in chunks to avoid overwhelming the connection pool
+      const chunks = [];
+      for (let i = 0; i < groups.length; i += this.parallelChunkSize) {
+        chunks.push(groups.slice(i, i + this.parallelChunkSize));
+      }
+
+      // Process each chunk in parallel, but chunks sequentially to manage connection pool
+      for (const chunk of chunks) {
+        const upsertPromises = chunk.map((g) =>
+          prisma.itemMainGroup.upsert({
+            where: {
+              item_main_group_code_branch_code_unique: {
+                itm_group_code: g.itm_group_code,
+                branch_code: g.branch_code,
+              },
             },
-          },
-          update: {
-            itm_group_name: g.itm_group_name,
-            order_group: g.order_group,
-            show_in_website: g.show_in_website,
-            saleable: g.saleable,
-            website_description_ar: g.website_description_ar,
-            website_description_en: g.website_description_en,
-            website_name_ar: g.website_name_ar,
-            website_name_en: g.website_name_en,
-            branch_code: g.branch_code,
-            parent_group_code: g.parent_group_code,
-            nested_level: g.nested_level,
-            path: g.path,
-          },
-          create: {
-            itm_group_code: g.itm_group_code,
-            itm_group_name: g.itm_group_name,
-            order_group: g.order_group,
-            show_in_website: g.show_in_website,
-            saleable: g.saleable,
-            website_description_ar: g.website_description_ar,
-            website_description_en: g.website_description_en,
-            website_name_ar: g.website_name_ar,
-            website_name_en: g.website_name_en,
-            branch_code: g.branch_code,
-            parent_group_code: g.parent_group_code,
-            nested_level: g.nested_level,
-            path: g.path,
-          },
-        });
-        count++;
+            update: {
+              itm_group_name: g.itm_group_name,
+              order_group: g.order_group,
+              show_in_website: g.show_in_website,
+              saleable: g.saleable,
+              website_description_ar: g.website_description_ar,
+              website_description_en: g.website_description_en,
+              website_name_ar: g.website_name_ar,
+              website_name_en: g.website_name_en,
+              branch_code: g.branch_code,
+              parent_group_code: g.parent_group_code,
+              nested_level: g.nested_level,
+              path: g.path,
+            },
+            create: {
+              itm_group_code: g.itm_group_code,
+              itm_group_name: g.itm_group_name,
+              order_group: g.order_group,
+              show_in_website: g.show_in_website,
+              saleable: g.saleable,
+              website_description_ar: g.website_description_ar,
+              website_description_en: g.website_description_en,
+              website_name_ar: g.website_name_ar,
+              website_name_en: g.website_name_en,
+              branch_code: g.branch_code,
+              parent_group_code: g.parent_group_code,
+              nested_level: g.nested_level,
+              path: g.path,
+            },
+          })
+        );
+
+        // Execute chunk in a transaction for atomicity and better connection management
+        await prisma.$transaction(upsertPromises);
       }
   
-      return { affectedRows: count };
+      return { affectedRows: groups.length };
     } catch (error) {
       logger.error("Error in batchUpsertGroups:", error);
       throw error;
     }
   }
   
-  /** 🔹 Batch upsert items using Prisma */
+  /** 🔹 Batch upsert items using Prisma (optimized with parallel operations) */
 
   async batchUpsertItems(items) {
     try {
-      let count = 0;
-      for (const i of items) {
-        await prisma.itemMaster.upsert({
-          where: {
-            item_master_code_branch_code_unique: {
-              itm_code: i.itm_code,
-              branch_code: i.branch_code,
+      if (!items || items.length === 0) {
+        return { affectedRows: 0 };
+      }
+
+      // Process in chunks to avoid overwhelming the connection pool
+      const chunks = [];
+      for (let i = 0; i < items.length; i += this.parallelChunkSize) {
+        chunks.push(items.slice(i, i + this.parallelChunkSize));
+      }
+
+      // Process each chunk in parallel, but chunks sequentially to manage connection pool
+      for (const chunk of chunks) {
+        const upsertPromises = chunk.map((i) =>
+          prisma.itemMaster.upsert({
+            where: {
+              item_master_code_branch_code_unique: {
+                itm_code: i.itm_code,
+                branch_code: i.branch_code,
+              },
             },
-          },
-          update: {
-            itm_name: i.itm_name,
-            item_order: i.item_order,
-            itm_group_code: i.itm_group_code,
-            photo_url: i.photo_url,
-            sales_price: i.sales_price,
-            show_in_website: i.show_in_website,
-            saleable: i.saleable,
-            website_description_ar: i.website_description_ar,
-            website_description_en: i.website_description_en,
-            website_name_ar: i.website_name_ar,
-            website_name_en: i.website_name_en,
-            branch_code: i.branch_code,
-            fasting: i.fasting,
-            vegetarian: i.vegetarian,
-            healthy_choice: i.healthy_choice,
-            signature_dish: i.signature_dish,
-            spicy: i.spicy,
-          },
-          create: {
-            itm_code: i.itm_code,
-            itm_name: i.itm_name,
-            item_order: i.item_order,
-            itm_group_code: i.itm_group_code,
-            photo_url: i.photo_url,
-            sales_price: i.sales_price,
-            show_in_website: i.show_in_website,
-            saleable: i.saleable,
-            website_description_ar: i.website_description_ar,
-            website_description_en: i.website_description_en,
-            website_name_ar: i.website_name_ar,
-            website_name_en: i.website_name_en,
-            branch_code: i.branch_code,
-            fasting: i.fasting,
-            vegetarian: i.vegetarian,
-            healthy_choice: i.healthy_choice,
-            signature_dish: i.signature_dish,
-            spicy: i.spicy,
-          },
-        });
-        count++;
+            update: {
+              itm_name: i.itm_name,
+              item_order: i.item_order,
+              itm_group_code: i.itm_group_code,
+              photo_url: i.photo_url,
+              sales_price: i.sales_price,
+              show_in_website: i.show_in_website,
+              saleable: i.saleable,
+              website_description_ar: i.website_description_ar,
+              website_description_en: i.website_description_en,
+              website_name_ar: i.website_name_ar,
+              website_name_en: i.website_name_en,
+              branch_code: i.branch_code,
+              fasting: i.fasting,
+              vegetarian: i.vegetarian,
+              healthy_choice: i.healthy_choice,
+              signature_dish: i.signature_dish,
+              spicy: i.spicy,
+            },
+            create: {
+              itm_code: i.itm_code,
+              itm_name: i.itm_name,
+              item_order: i.item_order,
+              itm_group_code: i.itm_group_code,
+              photo_url: i.photo_url,
+              sales_price: i.sales_price,
+              show_in_website: i.show_in_website,
+              saleable: i.saleable,
+              website_description_ar: i.website_description_ar,
+              website_description_en: i.website_description_en,
+              website_name_ar: i.website_name_ar,
+              website_name_en: i.website_name_en,
+              branch_code: i.branch_code,
+              fasting: i.fasting,
+              vegetarian: i.vegetarian,
+              healthy_choice: i.healthy_choice,
+              signature_dish: i.signature_dish,
+              spicy: i.spicy,
+            },
+          })
+        );
+
+        // Execute chunk in a transaction for atomicity and better connection management
+        await prisma.$transaction(upsertPromises);
       }
   
-      return { affectedRows: count };
+      return { affectedRows: items.length };
     } catch (error) {
       logger.error("Error in batchUpsertItems:", error);
       throw error;
@@ -427,16 +484,29 @@ class ItemTransferService {
   }
   
   /** 🔹 Full transfer */
-  async transferAllItems(branchCode) {
+  async transferAllItems(branchCode, dbPool) {
     const start = Date.now();
     logger.info(`Starting full sync for branch ${branchCode}...`);
 
-    // const [groups, items] = await Promise.all([
-    //   this.transferItemMainGroups(branchCode),
-    //   this.transferItemMaster(branchCode),
-    // ]);
-    const groups = await this.transferItemMainGroups(branchCode);
-    const items  = await this.transferItemMaster(branchCode);
+    // First sync groups - MUST complete successfully before items (FK constraint)
+    const groups = await this.transferItemMainGroups(branchCode, dbPool);
+    
+    if (!groups.success) {
+      logger.error(`Group sync failed for branch ${branchCode}, skipping items sync`);
+      return {
+        success: false,
+        groups,
+        items: { success: false, message: "Skipped due to group sync failure" },
+        duration: `${((Date.now() - start) / 1000).toFixed(2)} seconds`,
+        message: `Group sync failed for branch ${branchCode}`,
+      };
+    }
+
+    // Groups are committed, now sync items
+    // Add a small delay to ensure groups are fully committed to the database
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    const items = await this.transferItemMaster(branchCode, dbPool);
     
     const duration = ((Date.now() - start) / 1000).toFixed(2);
 

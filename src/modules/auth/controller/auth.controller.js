@@ -71,6 +71,25 @@ export const login = asyncHandler(async (req, res) => {
   });
 });
 
+/** 🔹 Get current database name from JWT token (lightweight) */
+export const getCurrentDatabase = asyncHandler(async (req, res) => {
+  const databaseName = req.user?.databaseName;
+  const email = req.user?.email;
+  const clientId = req.user?.clientId;
+
+  if (!databaseName) {
+    res.status(404);
+    throw new Error("Database name not found in token");
+  }
+
+  res.status(200).json({
+    success: true,
+    databaseName,
+    email,
+    clientId,
+  });
+});
+
 export const connectClient = asyncHandler(async (req, res) => {
   const clientId = req.user?.clientId; // <-- From JWT
 

@@ -5,6 +5,12 @@ import { auth } from "../../middleware/auth.middleware.js";
 const router = Router();
 //login
 router.post("/login", authController.login);
+//get current database (lightweight)
+router.get(
+  "/current-database",
+  auth(),
+  authController.getCurrentDatabase
+);
 //connect client
 router.post(
   "/connectClient",

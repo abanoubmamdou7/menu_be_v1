@@ -182,7 +182,7 @@ model Bucket {
 
 // Model for locations
 model Location {
-  id             String   @id @map("id")
+  id             String   @id @default(uuid()) @map("id")
   name           String   @map("name")
   address        String   @map("address")
   location_order Int?     @map("location_order")
