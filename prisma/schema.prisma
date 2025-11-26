@@ -196,3 +196,41 @@ model Location {
 
   @@map("locations")
 }
+
+// Model for survey questions with bilingual support (Arabic/English)
+model SurveyQuestion {
+  id            String   @id @default(uuid())
+  question_en   String   @db.Text
+  question_ar   String   @db.Text
+  question_type String   @default("rating") // 'rating', 'text', 'yes_no'
+  is_active     Boolean  @default(true)
+  display_order Int      @default(0)
+  created_at    DateTime @map("created_at") @default(now())
+  updated_at    DateTime @map("updated_at") @default(now()) @updatedAt
+
+  responses SurveyResponse[]
+
+  @@map("survey_questions")
+  @@index([is_active])
+  @@index([display_order])
+}
+
+// Model for survey responses from customers
+model SurveyResponse {
+  id             String   @id @default(uuid())
+  question_id    String   @map("question_id")
+  rating         Int?     // 1-10 for rating questions, 10=yes/1=no for yes_no
+  text_response  String?  @db.Text
+  customer_name  String?
+  customer_email String?
+  customer_phone String?
+  session_id     String   // Groups responses from same survey submission
+  created_at     DateTime @map("created_at") @default(now())
+
+  question SurveyQuestion @relation(fields: [question_id], references: [id], onDelete: Cascade)
+
+  @@map("survey_responses")
+  @@index([question_id])
+  @@index([session_id])
+  @@index([created_at])
+}
